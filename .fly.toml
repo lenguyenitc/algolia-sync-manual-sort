@@ -1,0 +1,42 @@
+# fly.toml app configuration file generated for algolia-sync-manual-sort-still-frog-6279 on 2025-06-11T14:09:36+07:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'algolia-sync-manual-sort-still-frog-6279'
+primary_region = 'sin'
+
+[build]
+
+[env]
+  HOST = 'algolia-sync-manual-sort-still-frog-6279.fly.dev'
+  SHOPIFY_API_KEY = '313f78ef3e9e535111f3d4741a497365'
+  NODE_ENV = 'production'
+  PORT = '3000'
+  SHOPIFY_APP_URL = 'https://algolia-sync-manual-sort-still-frog-6279.fly.dev'
+  SHOPIFY_SHOP = 'dwightsnz.myshopify.com'
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[services]]
+  protocol = ''
+  internal_port = 3000
+
+  [[services.ports]]
+    port = 80
+    handlers = ['http']
+
+  [[services.ports]]
+    port = 443
+    handlers = ['tls', 'http']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1

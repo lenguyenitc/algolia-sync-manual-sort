@@ -1,0 +1,36 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "bd96147374a52620700c79eea762b3d1"
+name = "Algolia Sync Manual Sort"
+handle = "algolia-sync-manual-sort"
+application_url = "https://847a-2405-4803-b623-55b0-d8b9-632c-7c3b-382.ngrok-free.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = false
+include_config_on_deploy = true
+
+[webhooks]
+api_version = "2025-04"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_customer_events,read_files,read_inventory,read_metaobject_definitions,read_metaobjects,read_online_store_navigation,read_products,read_themes,write_files,write_inventory,write_metaobject_definitions,write_metaobjects,write_online_store_navigation,write_products,write_theme_code,write_themes"
+
+[auth]
+redirect_urls = [
+  "https://847a-2405-4803-b623-55b0-d8b9-632c-7c3b-382.ngrok-free.app/auth/callback",
+  "https://847a-2405-4803-b623-55b0-d8b9-632c-7c3b-382.ngrok-free.app/auth/shopify/callback",
+  "https://847a-2405-4803-b623-55b0-d8b9-632c-7c3b-382.ngrok-free.app/api/auth/callback"
+]
+
+[pos]
+embedded = false
