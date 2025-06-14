@@ -45,6 +45,9 @@ export default defineConfig({
       // See https://vitejs.dev/config/server-options.html#server-fs-allow for more information
       allow: ["app", "node_modules"],
     },
+    watch: {
+      usePolling: true,
+    },
   },
   plugins: [
     remix({

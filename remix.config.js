@@ -17,4 +17,8 @@ module.exports = {
   serverModuleFormat: "cjs",
   dev: { port: process.env.HMR_SERVER_PORT || 8002 },
   future: {},
+  server: {
+    port: process.env.PORT || 3000,
+    host: "0.0.0.0",
+  },
 };

@@ -4,7 +4,30 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const env = { ...process.env };
+const env = { 
+  ...process.env,
+  HOST: '0.0.0.0',
+  PORT: process.env.PORT || '3000',
+  SHOPIFY_API_URL: process.env.SHOPIFY_API_URL || 'https://shopify.com',
+  SHOPIFY_API_VERSION: process.env.SHOPIFY_API_VERSION || '2023-10'
+};
+
+// Create .env file with necessary environment variables
+const envContent = `
+HOST=${process.env.HOST || '0.0.0.0'}
+PORT=${process.env.PORT || '3000'}
+SHOPIFY_API_URL=${process.env.SHOPIFY_API_URL || 'https://shopify.com'}
+SHOPIFY_API_VERSION=${process.env.SHOPIFY_API_VERSION || '2024-01'}
+SHOPIFY_API_KEY=${process.env.SHOPIFY_API_KEY}
+SHOPIFY_API_SECRET=${process.env.SHOPIFY_API_SECRET}
+SHOPIFY_APP_URL=${process.env.SHOPIFY_APP_URL}
+DATABASE_URL=${process.env.DATABASE_URL || 'file:./prisma/dev.db'}
+NODE_ENV=${process.env.NODE_ENV || 'production'}
+SCOPES=${process.env.SCOPES || 'write_products,read_products,write_script_tags,read_script_tags'}
+`;
+
+fs.writeFileSync('/app/.env', envContent.trim());
+console.log('Created .env file with environment variables');
 
 if (process.argv.slice(-3).join(' ') === 'npm run start') {
   const target = '/data/dev.sqlite';
@@ -46,6 +69,11 @@ if (process.argv.slice(-3).join(' ') === 'npm run start') {
   console.log('Running prisma migrate deploy');
   await exec('npx prisma migrate deploy');
   console.log('Prisma migrate deploy completed');
+}
+
+// Set DATABASE_URL if not already set
+if (!env.DATABASE_URL) {
+  env.DATABASE_URL = 'file:/data/dev.sqlite';
 }
 
 if (process.env.BUCKET_NAME) {
