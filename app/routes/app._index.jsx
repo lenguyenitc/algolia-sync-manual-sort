@@ -3,7 +3,6 @@ import { AppProvider, Frame, Page, Badge, LegacyCard, DataTable, Button, Skeleto
 import enTranslations from "@shopify/polaris/locales/en.json";
 import { Links, Meta, ScrollRestoration, Scripts, useLoaderData, useFetcher } from "@remix-run/react";
 import { useState, useEffect } from "react";
-import { parse } from "url";
 
 // Helper to call Shopify Admin API
 async function shopifyGraphQL({ shop, accessToken, query, variables }) {
@@ -147,97 +146,49 @@ export const action = async ({ request }) => {
 };
 
 export const loader = async ({ request }) => {
-  try {
-    const shop = process.env.SHOPIFY_SHOP;
-    const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
-    if (!shop || !accessToken) {
-      return json({ error: "Missing shop or access token" }, { status: 401 });
-    }
+  // You should get these from your session/auth
+  const shop = process.env.SHOPIFY_SHOP;
+  const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
 
-    // Parse page param from URL
-    const url = new URL(request.url);
-    const page = parseInt(url.searchParams.get("page") || "1", 10);
-    const perPage = 30;
-    let after = null;
-    let cursor = null;
+  // if (!shop || !accessToken) return redirect("/auth/login");
 
-    // To get the correct cursor for the requested page, we need to paginate
-    if (page > 1) {
-      // Fetch cursors up to the previous page
-      let lastCursor = null;
-      let hasNextPage = true;
-      let currentPage = 1;
-      while (currentPage < page && hasNextPage) {
-        const query = `
-          query getCollections($first: Int!, $after: String) {
-            collections(first: $first, after: $after) {
-              pageInfo { hasNextPage endCursor }
-              edges { cursor }
-            }
-          }
-        `;
-        const data = await shopifyGraphQL({
-          shop,
-          accessToken,
-          query,
-          variables: { first: perPage, after: lastCursor },
-        });
-        hasNextPage = data.collections.pageInfo.hasNextPage;
-        lastCursor = data.collections.pageInfo.endCursor;
-        currentPage++;
-      }
-      cursor = lastCursor;
-    }
-
-    // Main query for the current page
-    const query = `
-      query getCollections($first: Int!, $after: String) {
-        collections(first: $first, after: $after) {
-          pageInfo { hasNextPage hasPreviousPage endCursor startCursor }
-          edges {
-            cursor
-            node {
-              id
-              title
-              handle
-              sortOrder
-              products { totalCount }
-              metafield(namespace: \"custom\", key: \"rendered_at\") { value }
+  // Query first 10 collections and their sort order
+  const query = `
+    {
+      collections(first: 100) {
+        edges {
+          node {
+            id
+            title
+            handle
+            sortOrder
+            products(first: 10, sortKey: MANUAL) {
+              edges {
+                node {
+                  id
+                  title
+                }
+              }
             }
           }
         }
       }
-    `;
-    const data = await shopifyGraphQL({
-      shop,
-      accessToken,
-      query,
-      variables: { first: perPage, after: cursor },
-    });
-
-    if (!data?.collections?.edges) {
-      return json({ error: "Invalid collections data" }, { status: 500 });
     }
-
-    const collections = data.collections.edges.map(({ node, cursor }) => ({
+  `;
+  const data = await shopifyGraphQL({ shop, accessToken, query });
+  console.log('all collections data:', shop, accessToken, query);
+  const collections = data.collections.edges.map(({ node }) => ({
+    id: node.id,
+    title: node.title,
+    handle: node.handle,
+    sortOrder: node.sortOrder,
+    products: node.products.edges.map(({ node }) => ({
       id: node.id,
       title: node.title,
-      handle: node.handle,
-      sortOrder: node.sortOrder,
-      totalProducts: node.products.totalCount,
-      renderedAt: node.metafield?.value || null,
-      cursor,
-    }));
+    })),
+  }));
 
-    return json({
-      collections,
-      pageInfo: data.collections.pageInfo,
-      currentPage: page,
-      perPage,
-    });
-  } catch (error) {
-    return json({ error: error.message || "An unexpected error occurred" }, { status: 500 });
-  }
+  return json({ collections });
 };
 
 // Add this export to specify allowed methods
