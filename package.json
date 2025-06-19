@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "build": "remix vite:build",
-    "dev": "shopify app dev --localhost-port 3000",
+    "dev": "shopify app dev",
+    "dev1": "shopify app dev --localhost-port 3000",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
     "deploy": "shopify app deploy",

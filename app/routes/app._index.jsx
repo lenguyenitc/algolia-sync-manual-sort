@@ -1,25 +1,22 @@
 import { json } from "@remix-run/node";
-import { AppProvider, Frame, Page, Badge, LegacyCard, DataTable, Button, SkeletonBodyText, SkeletonDisplayText, Toast } from "@shopify/polaris";
+import {
+  AppProvider,
+  Frame,
+  Page,
+  Badge,
+  LegacyCard,
+  DataTable,
+  Button,
+  Toast,
+  Pagination,
+} from "@shopify/polaris";
 import enTranslations from "@shopify/polaris/locales/en.json";
-import { Links, Meta, ScrollRestoration, Scripts, useLoaderData, useFetcher } from "@remix-run/react";
+import { Links, Meta, ScrollRestoration, Scripts, useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import { useState, useEffect } from "react";
+import { authenticate } from "../shopify.server";
 
-// Helper to call Shopify Admin API
-async function shopifyGraphQL({ shop, accessToken, query, variables }) {
-  const res = await fetch(`https://${shop}/admin/api/2023-10/graphql.json`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": accessToken,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  const jsonRes = await res.json();
-  return jsonRes.data;
-}
-
-// Helper to set product metafield
-async function setProductMetafield({ shop, accessToken, productId, key, value }) {
+// --- Helper: Update a product's metafield via Shopify Admin GraphQL API ---
+async function setProductMetafield({ admin, productId, key, value }) {
   const mutation = `
     mutation productUpdate($input: ProductInput!) {
       productUpdate(input: $input) {
@@ -46,24 +43,31 @@ async function setProductMetafield({ shop, accessToken, productId, key, value })
       ],
     },
   };
-  return shopifyGraphQL({ shop, accessToken, query: mutation, variables });
+  const response = await admin.graphql(mutation, { variables });
+  const data = await response.json();
+  if (data?.data?.productUpdate?.userErrors?.length) {
+    console.error("Product metafield update userErrors:", data.data.productUpdate.userErrors);
+  }
+  return data;
 }
 
+// --- Action: Handles POST requests from the UI (e.g., "Render" button) ---
 export const action = async ({ request }) => {
-  const shop = process.env.SHOPIFY_SHOP;
-  const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
-  const formData = await request.formData();
-  const collectionId = formData.get("collectionId");
-  const collectionHandle = formData.get("collectionHandle");
-
-  if (!shop || !accessToken) {
-    return json({ error: "Missing shop or access token" }, { status: 401 });
-  }
-
+  console.log("[action] called with", request.url);
   try {
+    // Authenticate the admin session
+    const { admin } = await authenticate.admin(request);
+    const formData = await request.formData();
+    const collectionId = formData.get("collectionId");
+    const collectionHandle = formData.get("collectionHandle");
+
+    if (!admin) {
+      return json({ error: "Authentication required" }, { status: 401 });
+    }
+
     console.log("Received action for collection:", collectionId, collectionHandle);
 
-    // 1. Fetch collection details and products in order
+    // --- Fetch collection details and products ---
     const query = `
       query getCollection($id: ID!) {
         collection(id: $id) {
@@ -81,32 +85,24 @@ export const action = async ({ request }) => {
         }
       }
     `;
-    const data = await shopifyGraphQL({
-      shop,
-      accessToken,
-      query,
-      variables: { id: collectionId },
-    });
+    const response = await admin.graphql(query, { variables: { id: collectionId } });
+    const data = await response.json();
+    console.log("[action] collection data:", JSON.stringify(data));
 
-    const collection = data?.collection;
+    const collection = data?.data?.collection;
     if (!collection) {
       console.error("Collection not found:", collectionId);
       return json({ error: "Collection not found" }, { status: 404 });
     }
 
-    // 2. Only proceed if manual sort
     if (collection.sortOrder !== "MANUAL") {
       console.warn("Collection is not manual sort:", collection.sortOrder);
       return json({ error: "Collection is not manual sort" }, { status: 400 });
     }
 
-    // 3. Set metafield for each product with retry logic
+    // --- Set metafield for each product in the collection ---
     const products = collection.products.edges.map((e) => e.node);
-    const results = {
-      success: 0,
-      failed: 0,
-      errors: []
-    };
+    const results = { success: 0, failed: 0, errors: [] };
 
     for (let i = 0; i < products.length; i++) {
       const product = products[i];
@@ -115,11 +111,10 @@ export const action = async ({ request }) => {
           `Updating product ${product.id} (${product.title}) with key ${collectionHandle}_rank = ${i + 1}`
         );
         await setProductMetafield({
-          shop,
-          accessToken,
+          admin,
           productId: product.id,
           key: `${collectionHandle}_rank`,
-          value: i + 1, // 1-based position
+          value: i + 1,
         });
         results.success++;
       } catch (error) {
@@ -128,140 +123,191 @@ export const action = async ({ request }) => {
         results.errors.push({
           productId: product.id,
           title: product.title,
-          error: error.message
+          error: error.message,
         });
       }
     }
 
     console.log(`Updated ${results.success} products, failed: ${results.failed} for collection ${collectionHandle}`);
-    return json({ 
-      success: true, 
+
+    // --- Update collection's rendered_at metafield ---
+    const now = new Date().toISOString();
+    const setMetafieldMutation = `
+      mutation collectionUpdate($input: CollectionInput!) {
+        collectionUpdate(input: $input) {
+          collection {
+            id
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+    const metafieldResponse = await admin.graphql(setMetafieldMutation, {
+      variables: {
+        input: {
+          id: collectionId,
+          metafields: [
+            {
+              namespace: "custom",
+              key: "rendered_at",
+              type: "single_line_text_field",
+              value: now,
+            },
+          ],
+        },
+      },
+    });
+    const metafieldData = await metafieldResponse.json();
+    console.log("[action] metafield update response:", JSON.stringify(metafieldData));
+
+    return json({
+      success: true,
       results,
-      message: `Successfully updated ${results.success} products${results.failed > 0 ? `, ${results.failed} failed` : ''}`
+      message: `Successfully updated ${results.success} products${results.failed > 0 ? `, ${results.failed} failed` : ""}`,
     });
   } catch (error) {
-    console.error("Error processing collection:", error);
+    console.error("Action error:", error);
+    if (error.status === 401) {
+      return json({ error: "Session expired. Please refresh the page." }, { status: 401 });
+    }
     return json({ error: error.message || "An unexpected error occurred" }, { status: 500 });
   }
 };
 
+// --- Loader: Loads collections for the current page (pagination support) ---
 export const loader = async ({ request }) => {
-  // You should get these from your session/auth
-  const shop = process.env.SHOPIFY_SHOP;
-  const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
+  console.log("[loader] called with", request.url);
+  const { admin, session } = await authenticate.admin(request);
+  const shop = session?.shop || process.env.SHOPIFY_SHOP;
+  const url = new URL(request.url);
+  const page = parseInt(url.searchParams.get("page") || "1", 10);
+  const after = url.searchParams.get("after") || null;
+  const perPage = 30;
 
-  // if (!shop || !accessToken) return redirect("/auth/login");
-
-  // Query first 10 collections and their sort order
+  // --- GraphQL query to fetch paginated collections ---
   const query = `
-    {
-      collections(first: 100) {
+    query getCollections($first: Int!, $after: String) {
+      collections(first: $first, after: $after, query: "sortOrder:MANUAL") {
+        pageInfo { hasNextPage hasPreviousPage endCursor startCursor }
         edges {
+          cursor
           node {
             id
             title
             handle
             sortOrder
-            products(first: 10, sortKey: MANUAL) {
-              edges {
-                node {
-                  id
-                  title
-                }
-              }
-            }
+            productsCount { count }
+            metafield(namespace: "custom", key: "rendered_at") { value }
           }
         }
       }
     }
   `;
-  const data = await shopifyGraphQL({ shop, accessToken, query });
-  console.log('all collections data:', shop, accessToken, query);
-  const collections = data.collections.edges.map(({ node }) => ({
+
+  const response = await admin.graphql(query, {
+    variables: { first: perPage, after },
+  });
+  const data = await response.json();
+
+  if (!data?.data?.collections?.edges) {
+    return json({
+      collections: [],
+      pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      currentPage: page,
+      perPage,
+      shop,
+      error: "Collections data is missing or malformed.",
+    });
+  }
+
+  // --- Format collections for the UI ---
+  const collections = data.data.collections.edges.map(({ node, cursor }) => ({
     id: node.id,
     title: node.title,
     handle: node.handle,
     sortOrder: node.sortOrder,
-    products: node.products.edges.map(({ node }) => ({
-      id: node.id,
-      title: node.title,
-    })),
+    totalProducts: node.productsCount?.count ?? 0,
+    renderedAt: node.metafield?.value || null,
+    cursor,
   }));
 
-  return json({ collections });
+  return json({
+    collections,
+    pageInfo: data.data.collections.pageInfo,
+    currentPage: page,
+    perPage,
+    shop,
+  });
 };
 
-// Add this export to specify allowed methods
-export const config = {
-  unstable_allowDynamicGlob: ["**/node_modules/**"],
-};
-
-// Add this to specify allowed methods
-export const handle = {
-  methods: ["GET", "POST"],
-};
-
+// --- Main React component for the page ---
 export default function App() {
-  const { collections } = useLoaderData();
+  // --- Get initial data from loader ---
+  const { collections, pageInfo, currentPage, shop } = useLoaderData();
   const [toastMessage, setToastMessage] = useState(null);
   const [lastToastId, setLastToastId] = useState(null);
+  const navigate = useNavigate();
+  const fetcher = useFetcher();
 
-  // If collections are loading, show skeleton
-  if (!collections) {
-    return (
-      <AppProvider i18n={enTranslations}>
-        <Page title="Collections">
-          <LegacyCard>
-            <SkeletonDisplayText size="large" />
-            <SkeletonBodyText lines={6} />
-          </LegacyCard>
-        </Page>
-      </AppProvider>
-    );
-  }
-
-  const rows = collections.map((col) => {
-    const rowFetcher = useFetcher();
-    const isSubmitting = rowFetcher.state === "submitting";
-    const hasError = rowFetcher.data?.error;
-    const hasSuccess = rowFetcher.data?.success;
-
-    // Add a unique id for each row (e.g., collection id)
-    useEffect(() => {
-      if (hasSuccess && !isSubmitting && lastToastId !== col.id) {
+  // --- Handle toast messages for action responses ---
+  useEffect(() => {
+    if (fetcher.data?.success && fetcher.state === "idle" && lastToastId !== fetcher.data.message) {
+      setToastMessage({
+        content: fetcher.data.message,
+        tone: "success",
+      });
+      setLastToastId(fetcher.data.message);
+    } else if (fetcher.data?.error && fetcher.state === "idle" && lastToastId !== fetcher.data.error) {
+      if (fetcher.data.error === "Session expired. Please refresh the page.") {
+        window.location.reload();
+      } else {
         setToastMessage({
-          content: rowFetcher.data.message,
-          tone: "success"
+          content: fetcher.data.error,
+          tone: "critical",
         });
-        setLastToastId(col.id);
-      } else if (hasError && !isSubmitting && lastToastId !== col.id) {
-        setToastMessage({
-          content: rowFetcher.data.error,
-          tone: "critical"
-        });
-        setLastToastId(col.id);
       }
-      // eslint-disable-next-line
-    }, [hasSuccess, hasError, isSubmitting, rowFetcher.data]);
+      setLastToastId(fetcher.data.error);
+    }
+  }, [fetcher.data, fetcher.state, lastToastId]);
+
+  // --- Handle pagination (navigates to new page) ---
+  const handlePageChange = (newPage) => {
+    const url = new URL(window.location.href);
+    const params = new URLSearchParams(url.search);
+    params.set("page", newPage.toString());
+    if (newPage > currentPage && pageInfo.endCursor) {
+      params.set("after", pageInfo.endCursor);
+    } else if (newPage < currentPage) {
+      params.delete("after");
+    }
+    navigate(`/app?${params.toString()}`, { replace: true });
+  };
+
+  // --- Prepare table rows for DataTable ---
+  const rows = collections.map((col) => {
+    const isSubmitting = fetcher.state === "submitting";
+    const collectionIdShort = col.id.split("/").pop();
+    const adminUrl = `https://${shop}/admin/collections/${collectionIdShort}`;
 
     return [
-      col.title,
+      <a href={adminUrl} target="_blank" rel="noopener noreferrer">{col.title}</a>,
       col.sortOrder === "MANUAL" ? <Badge tone="success">Manual</Badge> : col.sortOrder,
-      <rowFetcher.Form method="post" action="?index">
+      col.totalProducts,
+      col.renderedAt ? new Date(col.renderedAt).toLocaleString() : "",
+      <fetcher.Form method="post">
         <input type="hidden" name="collectionId" value={col.id} />
         <input type="hidden" name="collectionHandle" value={col.handle} />
-        <Button
-          submit
-          disabled={col.sortOrder !== "MANUAL" || isSubmitting}
-          tone={col.sortOrder === "MANUAL" ? "primary" : "critical"}
-          loading={isSubmitting}
-        >
-          {isSubmitting ? "Processing..." : "Render Meta"}
+        <Button submit disabled={isSubmitting || col.sortOrder !== "MANUAL"} loading={isSubmitting}>
+          {isSubmitting ? "Processing..." : "Render"}
         </Button>
-      </rowFetcher.Form>,
+      </fetcher.Form>,
     ];
   });
 
+  // --- Render the page UI ---
   return (
     <html lang="en">
       <head>
@@ -274,10 +320,18 @@ export default function App() {
             <Page title="Collections">
               <LegacyCard>
                 <DataTable
-                  columnContentTypes={["text", "text", "text"]}
-                  headings={["Collection", "Sort Order", "Action"]}
+                  columnContentTypes={["text", "text", "numeric", "text", "text"]}
+                  headings={["Collection", "Sort Order", "Total Products", "Rendered At", "Action"]}
                   rows={rows}
                 />
+                <div style={{ marginTop: 16, display: "flex", justifyContent: "center" }}>
+                  <Pagination
+                    hasPrevious={currentPage > 1}
+                    onPrevious={() => handlePageChange(currentPage - 1)}
+                    hasNext={pageInfo?.hasNextPage}
+                    onNext={() => handlePageChange(currentPage + 1)}
+                  />
+                </div>
               </LegacyCard>
               {toastMessage && (
                 <Toast
@@ -295,3 +349,12 @@ export default function App() {
     </html>
   );
 }
+
+// --- Remix config for dynamic imports and allowed methods ---
+export const config = {
+  unstable_allowDynamicGlob: ["**/node_modules/**"],
+};
+
+export const handle = {
+  methods: ["GET", "POST"],
+};
